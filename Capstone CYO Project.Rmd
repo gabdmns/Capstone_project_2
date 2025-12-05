@@ -1,0 +1,622 @@
+---
+title: 'HarvardX Data Science: Capstone Project'
+author: "Gabriel Gonzalo Ojeda Cárcamo"
+date: "28/11/2025"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    latex_engine: pdflatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+\newpage
+# Introduction
+
+This Capstone Project for the HarvardX Professional Certificate in Data Science (PH125.9x) presents an exploratory analysis and modeling of the MovieLens 10M dataset provided by GroupLens Research. The objective is to develop a machine learning model capable of predicting movie ratings. After preparing the dataset, training, validation, and final hold-out partitions are created in accordance with the project guidelines, ensuring that every user and movie in the test set is also represented in the training set.
+
+The target performance metric is an RMSE below **0.86490** on the final hold-out test set. Two main families of recommender-system models are implemented and evaluated:
+
+1. **Regularized Baseline Models**, which incorporate the global mean rating along with movie and user effects. Regularization is applied to mitigate overfitting for users or movies with limited data. Hyperparameters are selected using a validation set, and the optimal $\lambda$ value is determined by minimizing RMSE.
+
+2. **Matrix Factorization using the `recosystem` library**, based on the LIBMF algorithm, which decomposes the user–movie rating matrix into latent factors. Hyperparameter tuning is performed through the tune routine, exploring different learning rates, regularization strengths, and latent dimensions. The final model is trained using the best-performing configuration.
+
+Both approaches are evaluated on the validation and final hold-out sets, and their RMSE values are compared to assess predictive accuracy and verify compliance with the project performance requirement. The comparison demonstrates the improvements achieved through the use of latent-factor models relative to the simpler baseline approach.
+
+## Loading Data
+```{r packages, warning=FALSE,message=FALSE}
+# Loading Packages 
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(stringr)) install.packages("stringr", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(recosystem)) install.packages("recosystem", repos = "http://cran.us.r-project.org")
+if(!require(tidyr)) install.packages("tidyr", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(Matrix)) install.packages("Matrix", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(stringr)
+library(dplyr)
+library(recosystem) 
+library(tidyr)
+library(ggplot2)
+library(Matrix)
+
+options(timeout = 120)
+
+dl <- "ml-10M100K.zip"
+if(!file.exists(dl))
+  download.file("https://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+file.info("ml-10M100K.zip")$size
+
+ratings_file <- "ml-10M100K/ratings.dat"
+if(!file.exists(ratings_file))
+  unzip(dl, ratings_file)
+
+movies_file <- "ml-10M100K/movies.dat"
+if(!file.exists(movies_file))
+  unzip(dl, movies_file)
+
+# EXTRAER TODO EL ZIP
+unzip(dl, exdir = ".")
+
+ratings_file <- "ml-10M100K/ratings.dat"
+movies_file  <- "ml-10M100K/movies.dat"
+```
+
+## Data Wrangling
+```{r}
+ratings <- as.data.frame(str_split(read_lines(ratings_file), fixed("::"), simplify = TRUE),
+                         stringsAsFactors = FALSE)
+colnames(ratings) <- c("userId", "movieId", "rating", "timestamp")
+ratings <- ratings %>%
+  mutate(userId = as.integer(userId),
+         movieId = as.integer(movieId),
+         rating = as.numeric(rating),
+         timestamp = as.integer(timestamp))
+
+movies <- as.data.frame(str_split(read_lines(movies_file), fixed("::"), simplify = TRUE),
+                        stringsAsFactors = FALSE)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- movies %>%
+  mutate(movieId = as.integer(movieId))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+```
+
+## Data partitioning
+
+```{r}
+# Final hold-out test set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.6 or later
+# set.seed(1) # if using R 3.5 or earlier
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in final hold-out test set are also in edx set
+final_holdout_test <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from final hold-out test set back into edx set
+removed <- anti_join(temp, final_holdout_test)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+dim(edx)
+nrow(final_holdout_test)
+```
+
+# Exploratory Data Analysis
+
+## Data structure
+```{r}
+# Number of users and movies
+n_users  <- n_distinct(edx$userId)
+n_movies <- n_distinct(edx$movieId)
+
+# Valid ratings
+summary(edx$rating)
+sum(edx$rating < 0.5 | edx$rating > 5)
+
+# NA's verification
+sum(is.na(edx))
+
+# Ratings Histogram
+edx %>% ggplot(aes(rating)) +
+  geom_histogram(binwidth = 0.5, fill="steelblue") +
+  theme_minimal()
+```
+The histogram of ratings shows a distribution clearly skewed toward higher values, with 3 and 4 being the most frequent scores, indicating that users tend to rate movies positively and rarely use low ratings. Intermediate scores (2 and 3) are also present, reflecting enough variability for analysis, while very low ratings are scarce, suggesting that users often prefer not to rate a movie rather than give it a negative score. Overall, this distribution reveals a typical positivity bias.
+
+## Movies
+
+```{r}
+
+# Number of ratings per movie
+movie_count <- edx %>%
+  count(movieId, sort = TRUE)
+
+summary(movie_count$n)
+
+# Logaritmic distribution
+
+movie_count %>% 
+  ggplot(aes(n)) +
+  geom_histogram(bins = 50) +
+  scale_x_log10() +
+  labs(title="Logaritmic Distribution of ratings per movie")
+
+
+```
+The logarithmic distribution of ratings per movie shows a highly skewed pattern in which most films receive a moderate number of ratings, while only a small subset accumulates very large counts. The peak concentration appears between roughly 10 and a few hundred ratings, indicating that the majority of movies are rated infrequently. As the number of ratings increases beyond the hundreds and into the thousands, the count of movies declines steadily, reflecting the typical long-tail phenomenon: a small group of popular titles receives a disproportionately high volume of ratings, whereas most movies remain relatively obscure.
+
+## Users
+
+```{r}
+
+# Count of ratings per user
+
+user_count <- edx %>% count(userId, sort = TRUE)
+summary(user_count$n)
+
+# Logaritmic Distribution
+
+user_count %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 50) +
+  scale_x_log10()+
+  labs(title="Logaritmic Distribution of ratings per user")
+```
+
+The logarithmic distribution of ratings per user shows that most users provide a moderate number of ratings, typically between a few dozen and a few hundred, while a much smaller group contributes extremely large numbers of ratings. The peak of the distribution—around 20 to 100 ratings—indicates that the majority of users interact with the system only occasionally, creating a broad middle segment of moderately active raters. As the number of ratings increases beyond the hundreds, the number of users declines steadily, producing a long-tail pattern where only a small minority of highly engaged users rate hundreds or even thousands of movies.
+
+## Comparisons
+
+```{r}
+# Mean rating vs popularity (movies)
+mu_hat <- mean(edx$rating)
+
+movie_stats <- edx %>%
+  group_by(movieId) %>%
+  summarize(mean_rating = mean(rating), count = n())
+
+ggplot(movie_stats, aes(count, mean_rating)) +
+  geom_point(alpha = 0.3) +
+  scale_x_log10() +
+  geom_hline(yintercept = mu_hat, color = "red", linetype = "dashed") +
+  labs(title = "Mean Rating vs Number of Ratings (Movie)",
+       x = "Number of Ratings (log scale)", y = "Mean Rating") +
+  theme_minimal()
+```
+This plot shows the relationship between a movie’s average rating and the number of ratings it receives (displayed on a logarithmic scale). Movies with very few ratings exhibit high variability in their mean scores—some appear extremely good or extremely bad—because small sample sizes produce unstable estimates. As the number of ratings increases, the dispersion of mean ratings narrows, and most movies converge toward a more stable average around the global mean (indicated by the red dashed line). This pattern highlights a classic variance reduction effect: highly rated or poorly rated movies with only a handful of ratings may not be genuinely exceptional but instead reflect statistical noise. In contrast, widely rated movies provide much more reliable estimates of true quality.
+
+```{r}
+# Mean rating vs activity (users) 
+
+user_stats <- edx %>%
+  group_by(userId) %>%
+  summarize(mean_rating = mean(rating), count = n())
+
+ggplot(user_stats, aes(count, mean_rating)) +
+  geom_point(alpha = 0.3, color = "brown") +
+  scale_x_log10() +
+  geom_hline(yintercept = mu_hat, color = "blue", linetype = "dashed") +
+  labs(title = "Mean Rating vs Number of Ratings (User)",
+       x = "Number of Ratings (log scale)", y = "Mean Rating") +
+  theme_minimal()
+```
+
+This plot shows the relationship between a user’s average rating and the number of ratings they have given, using a logarithmic scale for the x-axis. Users with very few ratings display extreme variability in their mean scores—some appear consistently harsh while others seem overly generous—because small samples amplify noise and make individual rating patterns look more extreme than they truly are. As users rate more movies, the variability narrows and their mean ratings stabilize around the global average (marked by the blue dashed line). The dense horizontal band indicates that most users tend to give ratings clustered between 3 and 4, but the tail of rare, highly active users also shows substantial heterogeneity.
+
+Across all four visualizations—the histogram of movie ratings, the distribution of ratings per movie, the distribution of ratings per user, and the scatterplots of mean rating versus count for both movies and users—the same pattern emerges: items or users with few observations produce highly unstable, noisy estimates, while those with many observations converge toward stable averages. This imbalance creates a strong bias–variance problem, meaning that unregularized models would overfit noisy, low-count movies or users and make inaccurate predictions. Regularization is therefore essential to shrink unreliable estimates toward the global average, stabilize model parameters, and ensure robust generalization across the entire dataset.
+
+
+```{r}
+############################################################
+# 7. YEAR EFFECTS (extract year from movie title)
+############################################################
+
+edx <- edx %>%
+  mutate(year = str_extract(title, "\\((\\d{4})\\)$") %>%
+           str_remove_all("[()]") %>% as.integer())
+
+year_stats <- edx %>%
+  group_by(year) %>%
+  summarize(mean_rating = mean(rating), count = n())
+
+ggplot(year_stats, aes(year, mean_rating)) +
+  geom_line(color = "darkred") +
+  labs(title = "Average Rating by Release Year",
+       x = "Release Year", y = "Average Rating") +
+  theme_minimal()
+```
+
+This plot shows how the average movie rating varies by release year, revealing a clear downward trend over time. Films released between the 1920s and 1960s generally exhibit higher average ratings, often above 3.8 and frequently exceeding 4.0. This pattern likely reflects a combination of survivorship bias—only the most memorable or critically respected older films remain widely viewed and rated—and the fact that early cinema classics attract audiences who already expect to enjoy them. Beginning in the late 1970s and especially through the 1980s, average ratings decline noticeably, reaching a low point in the 1990s and early 2000s, hovering around 3.4. This drop may be influenced by a much larger volume of modern releases, including many niche or lower-quality films, as well as more diverse viewing habits and broader participation in rating systems.
+
+```{r}
+
+############################################################
+# 10. CORRELATION BETWEEN COUNT & MEAN RATING
+############################################################
+
+cat("Movie: correlation =", cor(movie_stats$count, movie_stats$mean_rating), "\n")
+cat("User: correlation =", cor(user_stats$count, user_stats$mean_rating), "\n")
+
+```
+The correlation between movie rating count and movie mean rating is 0.21, which is a small positive relationship. This indicates that movies with more ratings tend to have slightly higher average ratings, but the effect is weak. This is consistent with the earlier plots: popular movies often stabilize around the global mean (and sometimes slightly above it), but the relationship is far from strong because the dataset includes many widely rated films of varying quality.
+
+In contrast, the correlation between user rating count and user mean rating is –0.16, a small negative relationship. This means that users who rate a large number of movies tend to give slightly lower average ratings. Heavy raters often evaluate a broader range of films—including many mediocre ones—whereas occasional users may rate only movies they already like, leading to artificially inflated averages. However, this relationship is also weak, indicating that rating frequency explains only a small portion of variation in user mean ratings.
+
+# Modelling
+
+
+## Regularized Baseline Models
+
+### Global Average Baseline
+
+This approach predicts every unknown rating using a single constant value: the overall average rating computed from the training set. This model acts as a simple baseline because it does not incorporate any information about users or movies.
+
+$$
+\hat{y} = \mu = \frac{1}{N} \sum_{u,i} r_{ui}
+$$
+
+```{r}
+# Define RMSE
+RMSE <- function(true, pred){
+  sqrt(mean((true - pred)^2))
+}
+
+# Model 1: Global Average Baseline
+
+mu_hat <- mean(edx$rating)
+
+pred_mean <- rep(mu_hat, nrow(final_holdout_test))
+
+rmse_mean <- RMSE(final_holdout_test$rating, pred_mean)
+rmse_mean
+
+```
+
+### Movie effect model
+
+Movies differ systematically in the way they are rated:
+some movies consistently receive higher-than-average ratings (because they are widely liked), while others consistently receive lower-than-average ratings.
+To capture this pattern, we estimate a movie bias $b_i$, which measures how much movie $i$ tends to deviate from the global average rating.
+
+The movie bias is computed as:
+
+$$
+b_i = \text{mean}(r_{ui} - \mu)
+$$
+
+```{r}
+
+# Model 2: Movie Effect Model
+
+movie_avgs <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu_hat))
+
+pred_movie <- final_holdout_test %>% 
+  left_join(movie_avgs, by = "movieId") %>% 
+  mutate(pred = mu_hat + b_i) %>% 
+  pull(pred)
+
+rmse_movie <- RMSE(final_holdout_test$rating, pred_movie)
+rmse_movie
+
+```
+### Movie and User effect model
+
+While movie effects capture how certain movies tend to receive higher or lower ratings than the global average, users also differ systematically in how they rate. Some users rate generously, giving high scores to most movies, while others are more strict and tend to give lower ratings overall.
+
+To capture this behavior, we estimate a user bias $b_u$, which measures how much a user $u$ average rating deviates from what we would expect after accounting for:
+
+- The global mean rating $\mu$
+- The specific movie bias $b_i$
+
+The user bias is computed as:
+
+$$
+b_u = \text{mean}(r_{ui} - \mu - b_i)
+$$
+
+This value represents the systematic tendency of a user to rate above or below the expected rating.
+With both movie and user effects included, the prediction becomes:
+
+$$
+\hat{y}_{ui} = \mu + b_i + b_u
+$$
+
+```{r}
+
+# Model 3: Movie and User Effects
+
+movie_avgs <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu_hat))
+
+user_avgs <- edx %>% 
+  left_join(movie_avgs, by = "movieId") %>% 
+  group_by(userId) %>% 
+  summarize(b_u = mean(rating - mu_hat - b_i))
+
+pred_movie_user <- final_holdout_test %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  mutate(pred = mu_hat + b_i + b_u) %>%
+  pull(pred)
+
+rmse_movie_user <- RMSE(final_holdout_test$rating, pred_movie_user)
+rmse_movie_user
+
+```
+### Regularized Movie + User Effects
+
+The model extends the baseline bias model by introducing regularization to prevent overfitting, especially for movies or users with very few ratings. In this approach, the movie bias \(b_i\) is estimated by shrinking the raw average deviation \((r_{ui} - \mu)\) toward zero using a penalty term \(\lambda\), giving  
+\[
+b_i = \frac{\sum(r_{ui} - \mu)}{n_i + \lambda},
+\]
+where \(n_i\) is the number of ratings for movie $i$. Similarly, the user bias \(b_u\) is regularized as  
+\[
+b_u = \frac{\sum(r_{ui} - \mu - b_i)}{n_u + \lambda},
+\]
+where \(n_u\) is the number of ratings made by user $u$. The denominator \((n_i + \lambda)\) or \((n_u + \lambda)\) reduces the influence of movies or users with small sample sizes, effectively shrinking their estimated biases toward zero and improving generalization. This regularization approach stabilizes the model by preventing extreme bias values and reducing noise from sparsely rated movies or users.
+
+We create an internal train/validation split to tune the regularization parameter $\lambda$ without touching the final holdout test set, preventing data leakage and ensuring that the selected $\lambda$ generalizes well to unseen data.
+
+```{r}
+
+# Model 4: Regularized Movie + User effects
+
+
+set.seed(1, sample.kind = "Rounding")
+
+# Internal train/validation split
+
+val_index <- createDataPartition(edx$rating, p = 0.1, list = FALSE)
+train <- edx[-val_index, ]
+val   <- edx[val_index, ]
+
+# Lambda Tunning
+
+lambdas <- seq(1, 10, 0.5)
+
+rmse_lambda <- sapply(lambdas, function(l) {
+  
+  mu_t <- mean(train$rating, na.rm = TRUE)
+  
+  b_i_t <- train %>%
+    group_by(movieId) %>%
+    summarize(
+      b_i = sum(rating - mu_t, na.rm = TRUE) / (n() + l),
+      .groups = "drop"
+    )
+  
+  b_u_t <- train %>%
+    left_join(b_i_t, by = "movieId") %>%
+    group_by(userId) %>%
+    summarize(
+      b_u = sum(rating - mu_t - b_i, na.rm = TRUE) / (n() + l),
+      .groups = "drop"
+    )
+  
+  pred_val_tbl <- val %>%
+    left_join(b_i_t, by = "movieId") %>%
+    left_join(b_u_t, by = "userId") %>%
+    replace_na(list(b_i = 0, b_u = 0)) %>%
+    mutate(pred = mu_t + b_i + b_u)
+  
+  RMSE(pred_val_tbl$rating, pred_val_tbl$pred)
+})
+
+rmse_lambda
+best_lambda <- lambdas[which.min(rmse_lambda)]
+best_lambda
+
+# Final model training with best lambda
+
+#  Lambda
+lambda <- best_lambda
+
+#  Global mean
+mu <- mean(edx$rating, na.rm = TRUE)
+
+#  Regularized movie effect b_i
+b_i <- edx %>%
+  group_by(movieId) %>%
+  summarize(
+    b_i = sum(rating - mu, na.rm = TRUE) / (n() + lambda),
+    .groups = "drop"
+  )
+
+#  Regularized user effect b_u
+b_u <- edx %>%
+  left_join(b_i, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(
+    b_u = sum(rating - mu - b_i, na.rm = TRUE) / (n() + lambda),
+    .groups = "drop"
+  )
+
+# Build predictions on  final_holdout_test
+pred_tbl <- final_holdout_test %>%
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  replace_na(list(b_i = 0, b_u = 0)) %>%
+  mutate(pred = mu + b_i + b_u)
+
+# RMSE of the regularized baseline predictor
+rmse_reg <- RMSE(pred_tbl$rating, pred_tbl$pred)
+rmse_reg
+
+```
+
+The final regularized baseline predictor, trained on all available edx data, achieved an RMSE of approximately 0.8648 on the holdout test set.
+
+## Matrix Factorization
+
+Matrix Factorization is a collaborative filtering technique that represents users and movies through latent factors learned from the rating matrix. Instead of modeling individual biases, this method captures deeper interaction patterns by decomposing the rating \(R\) into two lower-dimensional matrices: one describing user preferences and another describing movie characteristics. The predicted rating is obtained from the dot product of these latent vectors, allowing the model to generalize even in sparse datasets. By tuning the dimensionality and applying regularization, matrix factorization can uncover complex structures in the data and achieve significantly better predictive performance than baseline methods.
+
+```{r}
+
+
+# Preparing the data
+edx <- edx %>%
+  mutate(
+    userId  = as.integer(userId),
+    movieId = as.integer(movieId),
+    rating  = as.numeric(rating)
+  )
+
+final_holdout_test <- final_holdout_test %>%
+  mutate(
+    userId  = as.integer(userId),
+    movieId = as.integer(movieId),
+    rating  = as.numeric(rating)
+  )
+
+# Create objets for recosystem package
+train_data <- data_memory(
+  user_index = edx$userId,
+  item_index = edx$movieId,
+  rating     = edx$rating
+)
+
+test_data <- data_memory(
+  user_index = final_holdout_test$userId,
+  item_index = final_holdout_test$movieId
+)
+
+```
+
+## Hyperparameters in Matrix Factorization (recosystem)
+
+Matrix factorization models depend on several hyperparameters that control the complexity of the latent factors, the speed of learning, and the strength of regularization. The main hyperparameters tuned in this project were:
+
+- **`dim`**  
+  Number of latent factors (dimensions) used to represent users and movies.  
+  A higher `dim` allows the model to capture more complex interaction patterns, but increases the risk of overfitting and computational cost.
+
+- **`lrate`** (learning rate)  
+  Step size used during stochastic gradient descent.  
+  A small learning rate makes training stable but slow, while a large learning rate speeds convergence but can cause instability or divergence.
+
+- **`costp_l2`** (user L2 regularization)  
+ Regularization on the user factors discourages the model from assigning extreme values to a user’s latent features. By keeping these values smaller, the model avoids giving too much importance to users who have rated only a handful of movies, which helps prevent overfitting.
+
+- **`costq_l2`** (item L2 regularization)  
+  Penalizes large values in the movie latent factor vectors \(Q\).  
+  This helps control overfitting for movies with limited rating history.
+
+- **`costp_l1`** and **`costq_l1`** (L1 regularization for users/movies)  
+  These impose sparsity on the latent factors, but in practice provided worse performance for this dataset. They were still explored during tuning.
+
+- **`niter`**  
+  Number of training iterations.  
+  More iterations allow better convergence but increase training time.
+
+- **`nthread`**  
+  Number of CPU threads to use.  
+
+Together, these hyperparameters balance **model capacity**, **training stability**, and **generalization**, allowing the matrix factorization model to achieve strong performance while avoiding overfitting.
+
+```{r}
+#Initializing the matrix factorization model
+
+set.seed(1)  # reproducibility
+
+r <- Reco()  # initialize the MF model
+
+opts_tune <- r$tune(
+  train_data,
+  opts = list(
+    dim      = c(10, 20, 50),   # latent dimensions
+    lrate    = c(0.05, 0.1),    # learning rate
+    costp_l2 = c(0.01, 0.1),    # L2 regularization (user factors)
+    costq_l2 = c(0.01, 0.1),    # L2 regularization (item factors)
+    nthread  = 6,
+    niter    = 20,              # iterations for *tuning* (not final training)
+    verbose  = TRUE
+  )
+)
+
+opts_tune$min  # best group of hyperparameters
+
+best_opts <- opts_tune$min
+
+r$train(
+  train_data,
+  opts = c(
+    best_opts,
+    nthread = 4,   
+    niter   = 50, 
+    verbose = TRUE
+  )
+)
+
+# Predictions on the test data
+pred_ratings <- r$predict(test_data)
+
+# RMSE
+rmse_mf <- RMSE(final_holdout_test$rating, pred_ratings)
+rmse_mf
+```
+
+
+```{r}
+# Error = real - predicho
+errors <- final_holdout_test$rating - pred_tbl$pred
+
+library(ggplot2)
+
+ggplot(data.frame(errors), aes(errors)) +
+  geom_histogram(binwidth = 0.2, fill = "steelblue", color = "white") +
+  theme_minimal() +
+  labs(
+    title = "Error Distribution (rating - prediction)",
+    x = "Prediction Error",
+    y = "Count"
+  )
+
+
+```
+
+# Results
+
+The performance of the models was evaluated using the Root Mean Squared Error (RMSE) on both the validation set and the final hold-out test set, following the project guidelines.
+
+## Regularized Baseline Model
+
+The regularized baseline model incorporates the global average rating along with movie and user effects, with a tuning parameter $\lambda$ to avoid overfitting for movies and users with few observations. Although this model improved upon the unregularized approaches, its RMSE remained above the target threshold of **0.86490**, indicating that baseline effects alone are insufficient to capture the full structure of the user–movie rating matrix.
+
+## Matrix Factorization
+
+Matrix Factorization (MF) using the `recosystem` package produced significantly better results. A grid search was performed over latent dimensions (10, 20, 50), learning rates (0.05 and 0.1), and regularization strengths. The best-performing configuration was:
+
+- **Latent dimensions:** 20  
+- **Learning rate:** 0.1  
+- **Regularization:** costp_l2 = 0.01, costq_l2 = 0.01  
+
+This configuration achieved an average validation RMSE during tuning of approximately:
+
+**RMSE = 0.8103**
+
+which is well below the project requirement of 0.86490. This confirms that MF captures latent features that the baseline model cannot represent.
+
+The final Matrix Factorization model, trained on the full edx set with the optimized hyperparameters, achieved an RMSE of 0.7799 on the final hold-out test set.
+
+
+# Conclusion
+
+Overall, the findings confirm that matrix factorization offers a robust and accurate solution for building recommender systems on large-scale datasets. The model generalizes well to unseen data, and the final performance validates the methodological choices and tuning process carried out throughout the project.
+
+
