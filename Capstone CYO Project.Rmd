@@ -1,7 +1,7 @@
 ---
-title: 'HarvardX Data Science: Capstone Project'
+title: "Data Promperú Clustering PAM FAMD"
 author: "Gabriel Gonzalo Ojeda Cárcamo"
-date: "28/11/2025"
+date: "26/11/2025"
 output:
   pdf_document:
     toc: true
@@ -12,611 +12,686 @@ output:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
 \newpage
 # Introduction
 
-This Capstone Project for the HarvardX Professional Certificate in Data Science (PH125.9x) presents an exploratory analysis and modeling of the MovieLens 10M dataset provided by GroupLens Research. The objective is to develop a machine learning model capable of predicting movie ratings. After preparing the dataset, training, validation, and final hold-out partitions are created in accordance with the project guidelines, ensuring that every user and movie in the test set is also represented in the training set.
+This project applies mixed-data clustering techniques, combining Factor Analysis of Mixed Data (FAMD) for dimensionality reduction and the Partitioning Around Medoids (PAM) algorithm for cluster formation. This methodological approach makes it possible to identify latent patterns within the population of international tourists by simultaneously incorporating sociodemographic characteristics, travel motivations, consumption preferences, and spending habits.
 
-The target performance metric is an RMSE below **0.86490** on the final hold-out test set. Two main families of recommender-system models are implemented and evaluated:
+The resulting segmentation reveals five clearly differentiated tourist profiles, providing valuable insights for marketing strategies, product development, and destination management. Identifying these groups enhances understanding of the heterogeneity among international visitors and supports evidence-based decision-making to strengthen the competitiveness and sustainability of the tourism sector.
 
-1. **Regularized Baseline Models**, which incorporate the global mean rating along with movie and user effects. Regularization is applied to mitigate overfitting for users or movies with limited data. Hyperparameters are selected using a validation set, and the optimal $\lambda$ value is determined by minimizing RMSE.
+## Study Objective
 
-2. **Matrix Factorization using the `recosystem` library**, based on the LIBMF algorithm, which decomposes the user–movie rating matrix into latent factors. Hyperparameter tuning is performed through the tune routine, exploring different learning rates, regularization strengths, and latent dimensions. The final model is trained using the best-performing configuration.
+- Identify groups of tourists who share similar characteristics
 
-Both approaches are evaluated on the validation and final hold-out sets, and their RMSE values are compared to assess predictive accuracy and verify compliance with the project performance requirement. The comparison demonstrates the improvements achieved through the use of latent-factor models relative to the simpler baseline approach.
+- Understand behavioral patterns related to travel, consumption, and personal attributes
 
-## Loading Data
-```{r packages, warning=FALSE,message=FALSE}
-# Loading Packages 
-if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
-if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
-if(!require(stringr)) install.packages("stringr", repos = "http://cran.us.r-project.org")
-if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
-if(!require(recosystem)) install.packages("recosystem", repos = "http://cran.us.r-project.org")
-if(!require(tidyr)) install.packages("tidyr", repos = "http://cran.us.r-project.org")
-if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
-if(!require(Matrix)) install.packages("Matrix", repos = "http://cran.us.r-project.org")
+- Support decision-making in tourism promotion, product design, and destination planning
 
-library(tidyverse)
-library(caret)
-library(stringr)
-library(dplyr)
-library(recosystem) 
-library(tidyr)
-library(ggplot2)
-library(Matrix)
+## Data Source
 
-options(timeout = 120)
+The analysis is based on the 2024 Foreign Tourist Profile Survey, conducted in February, May, August, and November of 2024. The dataset includes 5,268 international tourists, aged 15 years and older, surveyed at the Jorge Chávez International Airport upon entering the country. The survey collects detailed information on motivations, expectations, sociodemographic characteristics, and travel behavior, making it a robust source for statistical analysis and clustering.
 
-dl <- "ml-10M100K.zip"
-if(!file.exists(dl))
-  download.file("https://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+### Loading Packages
+```{r, warning=FALSE,message=FALSE}
+#Loading packages
+required_packages <- c(
+  "haven",        # read .sav (SPSS) files
+  "dplyr",        # data manipulation
+  "tidyr",        # tidy data tools
+  "purrr",        # functional programming
+  "janitor",      # clean tables, crosstabs
+  "sjlabelled",   # convert SPSS labelled → factor
+  "ggplot2",      # visualization
+  "GGally",       # ggpairs, exploratory plots
+  "naniar",       # missing data visualization
+  "VIM",          # alternative missing data plots
+  "missForest",   # mixed-type imputation
+  "FactoMineR",   # FAMD (mixed data PCA)
+  "factoextra",   # visualizations for FAMD/clustering
+  "cluster",      # PAM, silhouette
+  "clusterCrit",  # CH, Dunn indices
+  "clustertend",  # Hopkins, VAT (clusterability)
+  "fpc",          # cluster stability (clusterboot)
+  "ggrepel",      # nicer text labels
+  "scales",       # formatting (percentages, numbers)
+  "stringr",      # string operations
+  "forcats",      # factor manipulation
+  "knitr",
+  "kableExtra"
+)
 
-file.info("ml-10M100K.zip")$size
-
-ratings_file <- "ml-10M100K/ratings.dat"
-if(!file.exists(ratings_file))
-  unzip(dl, ratings_file)
-
-movies_file <- "ml-10M100K/movies.dat"
-if(!file.exists(movies_file))
-  unzip(dl, movies_file)
-
-# EXTRAER TODO EL ZIP
-unzip(dl, exdir = ".")
-
-ratings_file <- "ml-10M100K/ratings.dat"
-movies_file  <- "ml-10M100K/movies.dat"
+# Install missing packages and load them
+for (pkg in required_packages) {
+  if (!require(pkg, character.only = TRUE)) {
+    install.packages(pkg, repos = "http://cran.us.r-project.org")
+    library(pkg, character.only = TRUE)
+  } else {
+    library(pkg, character.only = TRUE)
+  }
+}     
+  
 ```
 
-## Data Wrangling
-```{r}
-ratings <- as.data.frame(str_split(read_lines(ratings_file), fixed("::"), simplify = TRUE),
-                         stringsAsFactors = FALSE)
-colnames(ratings) <- c("userId", "movieId", "rating", "timestamp")
-ratings <- ratings %>%
-  mutate(userId = as.integer(userId),
-         movieId = as.integer(movieId),
-         rating = as.numeric(rating),
-         timestamp = as.integer(timestamp))
-
-movies <- as.data.frame(str_split(read_lines(movies_file), fixed("::"), simplify = TRUE),
-                        stringsAsFactors = FALSE)
-colnames(movies) <- c("movieId", "title", "genres")
-movies <- movies %>%
-  mutate(movieId = as.integer(movieId))
-
-movielens <- left_join(ratings, movies, by = "movieId")
-```
-
-## Data partitioning
+### Loading Data
 
 ```{r}
-# Final hold-out test set will be 10% of MovieLens data
-set.seed(1, sample.kind="Rounding") # if using R 3.6 or later
-# set.seed(1) # if using R 3.5 or earlier
-test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
-edx <- movielens[-test_index,]
-temp <- movielens[test_index,]
+# Loading Data
 
-# Make sure userId and movieId in final hold-out test set are also in edx set
-final_holdout_test <- temp %>% 
-  semi_join(edx, by = "movieId") %>%
-  semi_join(edx, by = "userId")
+url_sav  <- "https://github.com/gabdmns/Capstone_project_2/raw/main/PTE2024PROMPERU.sav"
+tmp_file <- tempfile(fileext = ".sav")
 
-# Add rows removed from final hold-out test set back into edx set
-removed <- anti_join(temp, final_holdout_test)
-edx <- rbind(edx, removed)
+download.file(
+  url    = url_sav,
+  destfile = tmp_file,
+  mode   = "wb",
+  method = "libcurl"  # <- clave en Windows moderno
+)
 
-rm(dl, ratings, movies, test_index, temp, movielens, removed)
+data_sav <- read_sav(tmp_file)
 
-dim(edx)
-nrow(final_holdout_test)
+nrow(data_sav)  # Number of observations
+ncol(data_sav)  # Number of variables
+
 ```
+
+
+### Data Wrangling
+
+The selection of variables was based on the indicators reported by TurismoIN of PROMPERÚ, specifically on the set of summary measures from the survey. Variables related to the main purpose of travel, sociodemographic characteristics (age, gender, marital status, educational level, employment sector, and generational group), travel-planning aspects, and total spending were included.
+
+Each variable was converted to its appropriate type (factor or numeric). For variables P59 and P43_1, the category “NS/NR” was assigned to missing values in P59, while P43_1 was log-transformed and its missing values were imputed using the missForest algorithm, which applies Random Forest models iteratively to handle mixed-type data.
+
+```{r}
+# NA percentage in each variable
+na_pct <- sapply(data_sav, function(x) mean(is.na(x)) * 100)
+# Filter variables >90% NA's
+vars_mas_90_na <- na_pct[na_pct > 90]
+# Count of variables with more than 90% NA'S
+length(vars_mas_90_na)
+
+# Variable selection
+
+vars_final <- c("P01","P53_RANGO2","P54","P56","P57_1","P58","P59","P33","P34",
+                "P33_34_RNG","P60","P61","P53_GENERACION","P43_1")
+data_filtrada <- data_sav[, vars_final, drop = FALSE]
+
+info_compacto <- tibble(
+  variable  = vars_final,
+  pregunta  = map_chr(
+    vars_final,
+    ~ {
+      lab <- attr(data_sav[[.x]], "label")
+      if (is.null(lab)) NA_character_ else lab
+    }
+  ),
+  categorias = map_chr(
+    vars_final,
+    ~ {
+      labs <- attr(data_sav[[.x]], "labels")
+      if (is.null(labs)) return(NA_character_)
+      paste(names(labs), collapse = " | ")
+    }
+  ),
+  na_pct = na_pct[vars_final]
+)
+
+print(info_compacto)
+
+# Correct Data type
+
+data_fixed <- data_filtrada %>%
+  # 1) labelled → factor
+  mutate(across(
+    where(~ sjlabelled::is_labelled(.x)),
+    ~ sjlabelled::as_factor(.x, levels = "labels")
+  )) %>%
+  # 2) character → factor
+  mutate(across(
+    where(is.character),
+    as.factor
+  )) %>%
+  # 3) Date → numeric
+  mutate(across(
+    where(~ inherits(.x, "Date")),
+    ~ as.numeric(.x)
+  )) %>%
+  # 4) POSIXct → numeric
+  mutate(across(
+    where(~ inherits(.x, "POSIXt")),
+    ~ as.numeric(.x)
+  ))
+
+# P59: add NS/NR category
+if ("P59" %in% names(data_fixed) && is.factor(data_fixed[["P59"]])) {
+  tmp <- as.character(data_fixed[["P59"]])
+  tmp[is.na(tmp)] <- "NS/NR"
+  data_fixed[["P59"]] <- factor(tmp)
+}
+
+# P43_1: log-transform and set invalids to NA
+if ("P43_1" %in% names(data_fixed) && is.numeric(data_fixed[["P43_1"]])) {
+  data_fixed <- data_fixed %>%
+    mutate(
+      P43_1 = ifelse(P43_1 <= 0, NA_real_, P43_1),
+      P43_1 = log(P43_1)
+    )
+}
+
+data_fixed_df <- as.data.frame(data_fixed)
+
+colSums(is.na(data_fixed_df))
+
+# Validation
+which(sapply(data_fixed, is.list))  
+
+```
+
+### Missing value imputation
+
+```{r}
+# Handling Missing Values
+
+
+# Add a helper numeric variable from a factor (e.g., age range)
+data_fixed_df$helper_num <- as.numeric(data_fixed_df$P53_RANGO2)
+
+set.seed(123)
+mf_res <- missForest(data_fixed_df)
+
+# Check OOB error
+mf_res$OOBerror
+
+# Update data
+
+data_fixed_df_imputed <- mf_res$ximp
+
+# Drop helper variable
+data_fixed_df_imputed$helper_num <- NULL
+
+# Final imputed dataset
+data_fixed <- data_fixed_df_imputed
+
+```
+
+Missing values were imputed using the missForest algorithm, which applies Random Forest regression and classification to iteratively estimate missing entries in mixed-type datasets. A helper numeric variable derived from the age-range factor was included to stabilize the procedure, and the spending variable was log-transformed prior to imputation. The algorithm fit Random Forest models for each incomplete variable using all others as predictors, updating imputed values until convergence. The out-of-bag error indicated good performance (NRMSE $\approx$ 0.19 for numeric variables, PFC = 0.00 for categorical variables), providing evidence that the imputation preserved the underlying structure of the data. The auxiliary variable was then removed, and the fully imputed dataset was used for subsequent FAMD and clustering analyses.
+
 
 # Exploratory Data Analysis
 
-## Data structure
 ```{r}
-# Number of users and movies
-n_users  <- n_distinct(edx$userId)
-n_movies <- n_distinct(edx$movieId)
+# Exploratory Data Analysis
 
-# Valid ratings
-summary(edx$rating)
-sum(edx$rating < 0.5 | edx$rating > 5)
+# Distributions of key variables
 
-# NA's verification
-sum(is.na(edx))
+# We work on data_fixed (already cleaned, 14 vars)
+df <- data_fixed
 
-# Ratings Histogram
-edx %>% ggplot(aes(rating)) +
-  geom_histogram(binwidth = 0.5, fill="steelblue") +
+# 1.1 Categorical variables: barplots in a loop --------------------------
+cat_vars <- c("P01", "P53_RANGO2", "P54", "P56", "P57_1",
+              "P58", "P59", "P33", "P34", "P33_34_RNG",
+              "P60", "P61", "P53_GENERACION")
+
+for (v in cat_vars) {
+  p <- df %>%
+    count(.data[[v]]) %>%
+    mutate(prop = n / sum(n)) %>%
+    ggplot(aes(x = .data[[v]], y = prop)) +
+    geom_col() +
+    geom_text(aes(label = scales::percent(prop, accuracy = 0.1)),
+              vjust = -0.2, size = 3) +
+    labs(
+      title = paste("Distribution of", v),
+      x = v, y = "Proportion"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  print(p)
+}
+
+# Numeric variable: log-transformed total spending (P43_1)
+
+# Histogram of log-spending
+ggplot(df, aes(x = P43_1)) +
+  geom_histogram(bins = 30) +
+  labs(
+    title = "Distribution of Log-Transformed Total Trip Spending",
+    x = "log(Spending in USD)", 
+    y = "Count"
+  ) +
   theme_minimal()
-```
-The histogram of ratings shows a distribution clearly skewed toward higher values, with 3 and 4 being the most frequent scores, indicating that users tend to rate movies positively and rarely use low ratings. Intermediate scores (2 and 3) are also present, reflecting enough variability for analysis, while very low ratings are scarce, suggesting that users often prefer not to rate a movie rather than give it a negative score. Overall, this distribution reveals a typical positivity bias.
 
-## Movies
-
-```{r}
-
-# Number of ratings per movie
-movie_count <- edx %>%
-  count(movieId, sort = TRUE)
-
-summary(movie_count$n)
-
-# Logaritmic distribution
-
-movie_count %>% 
-  ggplot(aes(n)) +
-  geom_histogram(bins = 50) +
-  scale_x_log10() +
-  labs(title="Logaritmic Distribution of ratings per movie")
-
-
-```
-The logarithmic distribution of ratings per movie shows a highly skewed pattern in which most films receive a moderate number of ratings, while only a small subset accumulates very large counts. The peak concentration appears between roughly 10 and a few hundred ratings, indicating that the majority of movies are rated infrequently. As the number of ratings increases beyond the hundreds and into the thousands, the count of movies declines steadily, reflecting the typical long-tail phenomenon: a small group of popular titles receives a disproportionately high volume of ratings, whereas most movies remain relatively obscure.
-
-## Users
-
-```{r}
-
-# Count of ratings per user
-
-user_count <- edx %>% count(userId, sort = TRUE)
-summary(user_count$n)
-
-# Logaritmic Distribution
-
-user_count %>%
-  ggplot(aes(n)) +
-  geom_histogram(bins = 50) +
-  scale_x_log10()+
-  labs(title="Logaritmic Distribution of ratings per user")
-```
-
-The logarithmic distribution of ratings per user shows that most users provide a moderate number of ratings, typically between a few dozen and a few hundred, while a much smaller group contributes extremely large numbers of ratings. The peak of the distribution—around 20 to 100 ratings—indicates that the majority of users interact with the system only occasionally, creating a broad middle segment of moderately active raters. As the number of ratings increases beyond the hundreds, the number of users declines steadily, producing a long-tail pattern where only a small minority of highly engaged users rate hundreds or even thousands of movies.
-
-## Comparisons
-
-```{r}
-# Mean rating vs popularity (movies)
-mu_hat <- mean(edx$rating)
-
-movie_stats <- edx %>%
-  group_by(movieId) %>%
-  summarize(mean_rating = mean(rating), count = n())
-
-ggplot(movie_stats, aes(count, mean_rating)) +
-  geom_point(alpha = 0.3) +
-  scale_x_log10() +
-  geom_hline(yintercept = mu_hat, color = "red", linetype = "dashed") +
-  labs(title = "Mean Rating vs Number of Ratings (Movie)",
-       x = "Number of Ratings (log scale)", y = "Mean Rating") +
+# Density plot (better for log data)
+ggplot(df, aes(x = P43_1)) +
+  geom_density(fill = "steelblue", alpha = 0.4) +
+  labs(
+    title = "Density of Log-Transformed Total Trip Spending",
+    x = "log(Spending in USD)", 
+    y = "Density"
+  ) +
   theme_minimal()
-```
-This plot shows the relationship between a movie’s average rating and the number of ratings it receives (displayed on a logarithmic scale). Movies with very few ratings exhibit high variability in their mean scores—some appear extremely good or extremely bad—because small sample sizes produce unstable estimates. As the number of ratings increases, the dispersion of mean ratings narrows, and most movies converge toward a more stable average around the global mean (indicated by the red dashed line). This pattern highlights a classic variance reduction effect: highly rated or poorly rated movies with only a handful of ratings may not be genuinely exceptional but instead reflect statistical noise. In contrast, widely rated movies provide much more reliable estimates of true quality.
 
-```{r}
-# Mean rating vs activity (users) 
-
-user_stats <- edx %>%
-  group_by(userId) %>%
-  summarize(mean_rating = mean(rating), count = n())
-
-ggplot(user_stats, aes(count, mean_rating)) +
-  geom_point(alpha = 0.3, color = "brown") +
-  scale_x_log10() +
-  geom_hline(yintercept = mu_hat, color = "blue", linetype = "dashed") +
-  labs(title = "Mean Rating vs Number of Ratings (User)",
-       x = "Number of Ratings (log scale)", y = "Mean Rating") +
+# Boxplot of log-spending
+ggplot(df, aes(y = P43_1)) +
+  geom_boxplot() +
+  labs(
+    title = "Boxplot of Log-Transformed Total Trip Spending",
+    y = "log(Spending in USD)"
+  ) +
   theme_minimal()
-```
-
-This plot shows the relationship between a user’s average rating and the number of ratings they have given, using a logarithmic scale for the x-axis. Users with very few ratings display extreme variability in their mean scores—some appear consistently harsh while others seem overly generous—because small samples amplify noise and make individual rating patterns look more extreme than they truly are. As users rate more movies, the variability narrows and their mean ratings stabilize around the global average (marked by the blue dashed line). The dense horizontal band indicates that most users tend to give ratings clustered between 3 and 4, but the tail of rare, highly active users also shows substantial heterogeneity.
-
-Across all four visualizations—the histogram of movie ratings, the distribution of ratings per movie, the distribution of ratings per user, and the scatterplots of mean rating versus count for both movies and users—the same pattern emerges: items or users with few observations produce highly unstable, noisy estimates, while those with many observations converge toward stable averages. This imbalance creates a strong bias–variance problem, meaning that unregularized models would overfit noisy, low-count movies or users and make inaccurate predictions. Regularization is therefore essential to shrink unreliable estimates toward the global average, stabilize model parameters, and ensure robust generalization across the entire dataset.
-
-
-```{r}
-############################################################
-# 7. YEAR EFFECTS (extract year from movie title)
-############################################################
-
-edx <- edx %>%
-  mutate(year = str_extract(title, "\\((\\d{4})\\)$") %>%
-           str_remove_all("[()]") %>% as.integer())
-
-year_stats <- edx %>%
-  group_by(year) %>%
-  summarize(mean_rating = mean(rating), count = n())
-
-ggplot(year_stats, aes(year, mean_rating)) +
-  geom_line(color = "darkred") +
-  labs(title = "Average Rating by Release Year",
-       x = "Release Year", y = "Average Rating") +
-  theme_minimal()
-```
-
-This plot shows how the average movie rating varies by release year, revealing a clear downward trend over time. Films released between the 1920s and 1960s generally exhibit higher average ratings, often above 3.8 and frequently exceeding 4.0. This pattern likely reflects a combination of survivorship bias—only the most memorable or critically respected older films remain widely viewed and rated—and the fact that early cinema classics attract audiences who already expect to enjoy them. Beginning in the late 1970s and especially through the 1980s, average ratings decline noticeably, reaching a low point in the 1990s and early 2000s, hovering around 3.4. This drop may be influenced by a much larger volume of modern releases, including many niche or lower-quality films, as well as more diverse viewing habits and broader participation in rating systems.
-
-```{r}
-
-############################################################
-# 10. CORRELATION BETWEEN COUNT & MEAN RATING
-############################################################
-
-cat("Movie: correlation =", cor(movie_stats$count, movie_stats$mean_rating), "\n")
-cat("User: correlation =", cor(user_stats$count, user_stats$mean_rating), "\n")
 
 ```
-The correlation between movie rating count and movie mean rating is 0.21, which is a small positive relationship. This indicates that movies with more ratings tend to have slightly higher average ratings, but the effect is weak. This is consistent with the earlier plots: popular movies often stabilize around the global mean (and sometimes slightly above it), but the relationship is far from strong because the dataset includes many widely rated films of varying quality.
 
-In contrast, the correlation between user rating count and user mean rating is –0.16, a small negative relationship. This means that users who rate a large number of movies tend to give slightly lower average ratings. Heavy raters often evaluate a broader range of films—including many mediocre ones—whereas occasional users may rate only movies they already like, leading to artificially inflated averages. However, this relationship is also weak, indicating that rating frequency explains only a small portion of variation in user mean ratings.
 
 # Modelling
 
-
-## Regularized Baseline Models
-
-### Global Average Baseline
-
-This approach predicts every unknown rating using a single constant value: the overall average rating computed from the training set. This model acts as a simple baseline because it does not incorporate any information about users or movies.
-
-$$
-\hat{y} = \mu = \frac{1}{N} \sum_{u,i} r_{ui}
-$$
+## FAMD
 
 ```{r}
-# Define RMSE
-RMSE <- function(true, pred){
-  sqrt(mean((true - pred)^2))
+# Prepare data for FAMD (ensure unique rownames)
+
+data_famd_use <- as.data.frame(data_fixed)
+rownames(data_famd_use) <- paste0("ind_", seq_len(nrow(data_famd_use)))
+
+# FAMD on data without NA
+famd_res <- FAMD(data_famd_use, graph = FALSE)
+
+# Individual coordinates (for clustering)
+head(famd_res$ind$coord)
+
+# Contribution of variables to each dimension
+var_contrib <- famd_res$var$contrib
+var_contrib
+
+```
+
+\paragraph{Dimension 1.}
+This dimension is mainly defined by \textbf{age range (P53\_RANGO2)}, \textbf{generational group (P53\_GENERACION)}, and \textbf{trip anticipation (P58)}, with additional influence from \textbf{travel-companion type (P57\_1)}, \textbf{employment status (P56)}, and \textbf{work sector (P59)}. Together, these variables form a sociodemographic axis that separates younger, spontaneous travelers from older and more structured visitors.
+
+\paragraph{Dimension 2.}
+Dimension 2 is again driven by \textbf{generation (P53\_GENERACION)}, \textbf{age range (P53\_RANGO2)}, \textbf{trip anticipation (P58)}, and \textbf{travel-companion characteristics (P57\_1)}. Unlike Dimension 1, it emphasizes differences in planning behavior within demographic groups, distinguishing early versus late planners across age cohorts.
+
+\paragraph{Dimension 3.}
+This dimension is dominated by \textbf{trip-month variables}, particularly \textbf{P33\_34\_RNG} and \textbf{P34}, followed by \textbf{sector of work (P59)} and the \textbf{log-transformed spending variable (P43\_1)}. These contributions indicate that seasonal timing and expenditure levels are closely related in the structure of the data.
+
+\paragraph{Dimension 4.}
+Dimension 4 reflects a pure seasonality structure, defined almost entirely by \textbf{trip-month (P34)}, \textbf{combined trip timing (P33\_34\_RNG)}, and \textbf{planning month (P33)}. This axis captures temporal clustering patterns that are independent from demographic or socioeconomic characteristics.
+
+\paragraph{Dimension 5.}
+This dimension reintroduces sociodemographic variation through \textbf{age range (P53\_RANGO2)}, \textbf{generation (P53\_GENERACION)}, \textbf{trip anticipation (P58)}, and \textbf{travel-companion patterns (P57\_1)}. It highlights subtle behavioral differences within demographic groups that are not explained by the earlier dimensions.
+
+```{r}
+
+
+#  Distance + PAM + Silhouette (k = 2 to 10)
+dist_famd <- dist(famd_res$ind$coord)
+
+max_k <- 10
+sil_famd <- numeric(max_k)
+
+for (k in 2:max_k) {
+  pam_fit     <- pam(dist_famd, k = k, diss = TRUE)
+  sil_vals    <- silhouette(pam_fit$clustering, dist_famd)
+  sil_famd[k] <- mean(sil_vals[, 3])
+  cat("k =", k, "| Silhouette (FAMD+PAM) =", round(sil_famd[k], 4), "\n")
 }
 
-# Model 1: Global Average Baseline
+plot(2:max_k, sil_famd[2:max_k], type = "b",
+     xlab = "Número de clusters (K)",
+     ylab = "Silhouette promedio",
+     main = "Selección de K usando Silhouette (FAMD + PAM)")
 
-mu_hat <- mean(edx$rating)
+# Select optimal k (maximum silhouette between 2 and max_k)
+k_opt <- which.max(sil_famd[2:max_k]) + 1  # +1 porque el vector empieza en k=2
+cat("k óptimo elegido:", k_opt, "\n")
 
-pred_mean <- rep(mu_hat, nrow(final_holdout_test))
+# CALINSKI-HARABASZ INDEX
+install.packages("clusterCrit")
+library(clusterCrit)
 
-rmse_mean <- RMSE(final_holdout_test$rating, pred_mean)
-rmse_mean
+# Convert FAMD coordinates to numeric matrix
+X <- as.matrix(famd_res$ind$coord)
 
-```
+# Evaluate CH for k = 2 to 10
+ch_values <- numeric(max_k)
 
-### Movie effect model
-
-Movies differ systematically in the way they are rated:
-some movies consistently receive higher-than-average ratings (because they are widely liked), while others consistently receive lower-than-average ratings.
-To capture this pattern, we estimate a movie bias $b_i$, which measures how much movie $i$ tends to deviate from the global average rating.
-
-The movie bias is computed as:
-
-$$
-b_i = \text{mean}(r_{ui} - \mu)
-$$
-
-```{r}
-
-# Model 2: Movie Effect Model
-
-movie_avgs <- edx %>% 
-  group_by(movieId) %>% 
-  summarize(b_i = mean(rating - mu_hat))
-
-pred_movie <- final_holdout_test %>% 
-  left_join(movie_avgs, by = "movieId") %>% 
-  mutate(pred = mu_hat + b_i) %>% 
-  pull(pred)
-
-rmse_movie <- RMSE(final_holdout_test$rating, pred_movie)
-rmse_movie
-
-```
-### Movie and User effect model
-
-While movie effects capture how certain movies tend to receive higher or lower ratings than the global average, users also differ systematically in how they rate. Some users rate generously, giving high scores to most movies, while others are more strict and tend to give lower ratings overall.
-
-To capture this behavior, we estimate a user bias $b_u$, which measures how much a user $u$ average rating deviates from what we would expect after accounting for:
-
-- The global mean rating $\mu$
-- The specific movie bias $b_i$
-
-The user bias is computed as:
-
-$$
-b_u = \text{mean}(r_{ui} - \mu - b_i)
-$$
-
-This value represents the systematic tendency of a user to rate above or below the expected rating.
-With both movie and user effects included, the prediction becomes:
-
-$$
-\hat{y}_{ui} = \mu + b_i + b_u
-$$
-
-```{r}
-
-# Model 3: Movie and User Effects
-
-movie_avgs <- edx %>% 
-  group_by(movieId) %>% 
-  summarize(b_i = mean(rating - mu_hat))
-
-user_avgs <- edx %>% 
-  left_join(movie_avgs, by = "movieId") %>% 
-  group_by(userId) %>% 
-  summarize(b_u = mean(rating - mu_hat - b_i))
-
-pred_movie_user <- final_holdout_test %>%
-  left_join(movie_avgs, by = "movieId") %>%
-  left_join(user_avgs, by = "userId") %>%
-  mutate(pred = mu_hat + b_i + b_u) %>%
-  pull(pred)
-
-rmse_movie_user <- RMSE(final_holdout_test$rating, pred_movie_user)
-rmse_movie_user
-
-```
-### Regularized Movie + User Effects
-
-The model extends the baseline bias model by introducing regularization to prevent overfitting, especially for movies or users with very few ratings. In this approach, the movie bias \(b_i\) is estimated by shrinking the raw average deviation \((r_{ui} - \mu)\) toward zero using a penalty term \(\lambda\), giving  
-\[
-b_i = \frac{\sum(r_{ui} - \mu)}{n_i + \lambda},
-\]
-where \(n_i\) is the number of ratings for movie $i$. Similarly, the user bias \(b_u\) is regularized as  
-\[
-b_u = \frac{\sum(r_{ui} - \mu - b_i)}{n_u + \lambda},
-\]
-where \(n_u\) is the number of ratings made by user $u$. The denominator \((n_i + \lambda)\) or \((n_u + \lambda)\) reduces the influence of movies or users with small sample sizes, effectively shrinking their estimated biases toward zero and improving generalization. This regularization approach stabilizes the model by preventing extreme bias values and reducing noise from sparsely rated movies or users.
-
-We create an internal train/validation split to tune the regularization parameter $\lambda$ without touching the final holdout test set, preventing data leakage and ensuring that the selected $\lambda$ generalizes well to unseen data.
-
-```{r}
-
-# Model 4: Regularized Movie + User effects
-
-
-set.seed(1, sample.kind = "Rounding")
-
-# Internal train/validation split
-
-val_index <- createDataPartition(edx$rating, p = 0.1, list = FALSE)
-train <- edx[-val_index, ]
-val   <- edx[val_index, ]
-
-# Lambda Tunning
-
-lambdas <- seq(1, 10, 0.5)
-
-rmse_lambda <- sapply(lambdas, function(l) {
+for (k in 2:max_k) {
+  pam_fit <- pam(dist_famd, k = k, diss = TRUE)
   
-  mu_t <- mean(train$rating, na.rm = TRUE)
+  ch_values[k] <- intCriteria(
+    X,
+    as.integer(pam_fit$clustering),
+    c("calinski_harabasz")
+  )$calinski_harabasz
+}
+
+plot(2:max_k, ch_values[2:max_k], type = "b",
+     main = "Índice de Calinski–Harabasz",
+     xlab = "Número de clusters (k)",
+     ylab = "CH index")
+
+# DUNN INDEX
+
+dunn_values <- numeric(max_k)
+
+for (k in 2:max_k) {
+  pam_fit <- pam(dist_famd, k = k, diss = TRUE)
   
-  b_i_t <- train %>%
-    group_by(movieId) %>%
-    summarize(
-      b_i = sum(rating - mu_t, na.rm = TRUE) / (n() + l),
-      .groups = "drop"
-    )
-  
-  b_u_t <- train %>%
-    left_join(b_i_t, by = "movieId") %>%
-    group_by(userId) %>%
-    summarize(
-      b_u = sum(rating - mu_t - b_i, na.rm = TRUE) / (n() + l),
-      .groups = "drop"
-    )
-  
-  pred_val_tbl <- val %>%
-    left_join(b_i_t, by = "movieId") %>%
-    left_join(b_u_t, by = "userId") %>%
-    replace_na(list(b_i = 0, b_u = 0)) %>%
-    mutate(pred = mu_t + b_i + b_u)
-  
-  RMSE(pred_val_tbl$rating, pred_val_tbl$pred)
-})
+  dunn_values[k] <- intCriteria(
+    X,
+    as.integer(pam_fit$clustering),
+    c("dunn")
+  )$dunn
+}
 
-rmse_lambda
-best_lambda <- lambdas[which.min(rmse_lambda)]
-best_lambda
+plot(2:max_k, dunn_values[2:max_k], type = "b",
+     main = "Índice de Dunn",
+     xlab = "Número de clusters (k)",
+     ylab = "Dunn index")
 
-# Final model training with best lambda
-
-#  Lambda
-lambda <- best_lambda
-
-#  Global mean
-mu <- mean(edx$rating, na.rm = TRUE)
-
-#  Regularized movie effect b_i
-b_i <- edx %>%
-  group_by(movieId) %>%
-  summarize(
-    b_i = sum(rating - mu, na.rm = TRUE) / (n() + lambda),
-    .groups = "drop"
-  )
-
-#  Regularized user effect b_u
-b_u <- edx %>%
-  left_join(b_i, by = "movieId") %>%
-  group_by(userId) %>%
-  summarize(
-    b_u = sum(rating - mu - b_i, na.rm = TRUE) / (n() + lambda),
-    .groups = "drop"
-  )
-
-# Build predictions on  final_holdout_test
-pred_tbl <- final_holdout_test %>%
-  left_join(b_i, by = "movieId") %>%
-  left_join(b_u, by = "userId") %>%
-  replace_na(list(b_i = 0, b_u = 0)) %>%
-  mutate(pred = mu + b_i + b_u)
-
-# RMSE of the regularized baseline predictor
-rmse_reg <- RMSE(pred_tbl$rating, pred_tbl$pred)
-rmse_reg
 
 ```
 
-The final regularized baseline predictor, trained on all available edx data, achieved an RMSE of approximately 0.8648 on the holdout test set.
+\paragraph{Selection of the number of clusters.}
+The Dunn index attains its highest value at $K = 2$, indicating excellent compactness and separation at this level; however, it drops sharply from $K = 3$ onward and remains low and stable across larger values, suggesting increased overlap between clusters when $K > 2$. In contrast, the Calinski--Harabasz index increases steadily and reaches its maximum at $K = 6$, after which it declines, indicating that overall between-group separation relative to within-group cohesion is strongest around six clusters. The Silhouette index achieves its best value at $K = 3$, with a secondary local improvement at $K = 5$, while solutions from $K = 6$ to $K = 9$ show considerably weaker structure.
 
-## Matrix Factorization
-
-Matrix Factorization is a collaborative filtering technique that represents users and movies through latent factors learned from the rating matrix. Instead of modeling individual biases, this method captures deeper interaction patterns by decomposing the rating \(R\) into two lower-dimensional matrices: one describing user preferences and another describing movie characteristics. The predicted rating is obtained from the dot product of these latent vectors, allowing the model to generalize even in sparse datasets. By tuning the dimensionality and applying regularization, matrix factorization can uncover complex structures in the data and achieve significantly better predictive performance than baseline methods.
-
-```{r}
+Taken together, these indices suggest that no single value of $K$ is optimal across all criteria: $K = 2$ maximizes Dunn but produces overly coarse segmentation; $K = 3$ maximizes Silhouette but may overlook relevant subgroup variation; and $K = 6$ maximizes the Calinski--Harabasz index but risks generating less interpretable clusters. Considering the objective of obtaining differentiated, interpretable, and actionable tourist profiles, and given that both Silhouette and Calinski--Harabasz show local support for intermediate solutions, selecting $K = 5$ represents a balanced and defensible compromise, even if it is not the strictly optimal solution for any single index.
 
 
-# Preparing the data
-edx <- edx %>%
-  mutate(
-    userId  = as.integer(userId),
-    movieId = as.integer(movieId),
-    rating  = as.numeric(rating)
-  )
-
-final_holdout_test <- final_holdout_test %>%
-  mutate(
-    userId  = as.integer(userId),
-    movieId = as.integer(movieId),
-    rating  = as.numeric(rating)
-  )
-
-# Create objets for recosystem package
-train_data <- data_memory(
-  user_index = edx$userId,
-  item_index = edx$movieId,
-  rating     = edx$rating
-)
-
-test_data <- data_memory(
-  user_index = final_holdout_test$userId,
-  item_index = final_holdout_test$movieId
-)
-
-```
-
-## Hyperparameters in Matrix Factorization (recosystem)
-
-Matrix factorization models depend on several hyperparameters that control the complexity of the latent factors, the speed of learning, and the strength of regularization. The main hyperparameters tuned in this project were:
-
-- **`dim`**  
-  Number of latent factors (dimensions) used to represent users and movies.  
-  A higher `dim` allows the model to capture more complex interaction patterns, but increases the risk of overfitting and computational cost.
-
-- **`lrate`** (learning rate)  
-  Step size used during stochastic gradient descent.  
-  A small learning rate makes training stable but slow, while a large learning rate speeds convergence but can cause instability or divergence.
-
-- **`costp_l2`** (user L2 regularization)  
- Regularization on the user factors discourages the model from assigning extreme values to a user’s latent features. By keeping these values smaller, the model avoids giving too much importance to users who have rated only a handful of movies, which helps prevent overfitting.
-
-- **`costq_l2`** (item L2 regularization)  
-  Penalizes large values in the movie latent factor vectors \(Q\).  
-  This helps control overfitting for movies with limited rating history.
-
-- **`costp_l1`** and **`costq_l1`** (L1 regularization for users/movies)  
-  These impose sparsity on the latent factors, but in practice provided worse performance for this dataset. They were still explored during tuning.
-
-- **`niter`**  
-  Number of training iterations.  
-  More iterations allow better convergence but increase training time.
-
-- **`nthread`**  
-  Number of CPU threads to use.  
-
-Together, these hyperparameters balance **model capacity**, **training stability**, and **generalization**, allowing the matrix factorization model to achieve strong performance while avoiding overfitting.
+## Final clustering with PAM
 
 ```{r}
-#Initializing the matrix factorization model
+#  Final clustering with PAM
 
-set.seed(1)  # reproducibility
+pam_famd <- pam(dist_famd, k = 5, diss = TRUE)
+clusters_famd <- factor(pam_famd$clustering)
 
-r <- Reco()  # initialize the MF model
+table(clusters_famd)
 
-opts_tune <- r$tune(
-  train_data,
-  opts = list(
-    dim      = c(10, 20, 50),   # latent dimensions
-    lrate    = c(0.05, 0.1),    # learning rate
-    costp_l2 = c(0.01, 0.1),    # L2 regularization (user factors)
-    costq_l2 = c(0.01, 0.1),    # L2 regularization (item factors)
-    nthread  = 6,
-    niter    = 20,              # iterations for *tuning* (not final training)
-    verbose  = TRUE
-  )
-)
+# Final average silhouette
+sil_famd_kopt <- silhouette(pam_famd$clustering, dist_famd)
+mean_sil_kopt <- mean(sil_famd_kopt[, 3])
+cat("Silhouette promedio (k_opt) =", round(mean_sil_kopt, 4), "\n")
 
-opts_tune$min  # best group of hyperparameters
+# Add clusters to dataset
+data_clust <- data_famd_use %>%
+  mutate(cluster = clusters_famd)
 
-best_opts <- opts_tune$min
+table(data_clust$cluster)
 
-r$train(
-  train_data,
-  opts = c(
-    best_opts,
-    nthread = 4,   
-    niter   = 50, 
-    verbose = TRUE
-  )
-)
+# FAMD plot: individuals by cluster (with ggplot2)
 
-# Predictions on the test data
-pred_ratings <- r$predict(test_data)
+# Using coordinates of the first two dimensions:
+ind_coords <- as.data.frame(famd_res$ind$coord[, 1:2])
+colnames(ind_coords) <- c("Dim1", "Dim2")
+ind_coords$cluster <- clusters_famd
 
-# RMSE
-rmse_mf <- RMSE(final_holdout_test$rating, pred_ratings)
-rmse_mf
-```
-
-
-```{r}
-# Error = real - predicho
-errors <- final_holdout_test$rating - pred_tbl$pred
-
-library(ggplot2)
-
-ggplot(data.frame(errors), aes(errors)) +
-  geom_histogram(binwidth = 0.2, fill = "steelblue", color = "white") +
-  theme_minimal() +
+ggplot(ind_coords, aes(x = Dim1, y = Dim2, color = cluster)) +
+  geom_point(alpha = 0.6, size = 1) +
+  stat_ellipse(aes(group = cluster), type = "norm", level = 0.95) +
   labs(
-    title = "Error Distribution (rating - prediction)",
-    x = "Prediction Error",
-    y = "Count"
-  )
-
-
+    title = "FAMD - Individuos por cluster (PAM sobre coordenadas FAMD)",
+    x = "Dimensión 1",
+    y = "Dimensión 2",
+    color = "Cluster"
+  ) +
+  theme_minimal()
 ```
+
+\paragraph{Interpretation of the Final PAM Clustering ($k = 5$).}
+After selecting $k = 5$ as the preferred number of clusters, the PAM algorithm was applied to the FAMD distance matrix. The resulting clusters show a balanced and clearly differentiated structure, with the following group sizes: Cluster~1: 615 individuals; Cluster~2: 919 individuals; Cluster~3: 1{,}076 individuals; Cluster~4: 1{,}983 individuals; and Cluster~5: 675 individuals. Cluster~4 is noticeably the largest group, while Clusters~1 and~5 are smaller but still substantial, indicating that none of the clusters is excessively small or unstable due solely to sample size.
+
+The average Silhouette value for the selected solution is $\text{Silhouette}(k = 5) = 0.3088$. A value around 0.30 . This supports the conclusion that the five-cluster solution provides meaningful, interpretable, and statistically sound segmentation without imposing overly rigid cluster boundaries.
+
+
+## Cluster stability analysis
+
+```{r}
+# Cluster Stability Analysis
+
+# Wrapper function for PAM (required by clusterboot)
+pam_5 <- function(x, k) {
+  pam(x, k = k, diss = FALSE)$clustering
+}
+
+# Cluster stability analysis with bootstrap
+set.seed(123)
+invisible(
+  capture.output(
+    cb <- clusterboot(
+      X,
+      B            = 300,         # number of bootstrap samples
+      bootmethod   = "boot",      # resample rows with replacement
+      clustermethod = pamkCBI,    # PAM method compatible with clusterboot
+      k            = 5,           # selected number of clusters
+      seed         = 123,
+      showplots    = FALSE
+    )
+  )
+)
+
+cb
+```
+
+
+Cluster stability was evaluated through bootstrap resampling using the \texttt{clusterboot} procedure. The resulting Jaccard similarity coefficients---$[0.98,\; 0.88,\; 0.84,\; 0.91,\; 0.93]$---indicate strong and consistent recovery of the five clusters across resampled datasets. Clusters~1, 4, and~5 exhibit extremely high stability (Jaccard $> 0.90$), Cluster~2 shows very high stability (0.88), and Cluster~3 reaches acceptable stability (0.84), despite showing a small number of dissolutions (23 out of 300 runs). All other clusters experienced zero dissolutions, confirming excellent reproducibility. Overall, these results demonstrate that the five-cluster solution is empirically robust and that the identified segments persist under resampling rather than arising from random variation.
+
 
 # Results
 
-The performance of the models was evaluated using the Root Mean Squared Error (RMSE) on both the validation set and the final hold-out test set, following the project guidelines.
+```{r}
 
-## Regularized Baseline Model
+# Cluster profiles (categorical variables)
 
-The regularized baseline model incorporates the global average rating along with movie and user effects, with a tuning parameter $\lambda$ to avoid overfitting for movies and users with few observations. Although this model improved upon the unregularized approaches, its RMSE remained above the target threshold of **0.86490**, indicating that baseline effects alone are insufficient to capture the full structure of the user–movie rating matrix.
+perfil_var_cluster <- function(var_name) {
+  tab <- table(data_clust[[var_name]], data_clust$cluster)
+  prop_clust <- prop.table(tab, margin = 2)  # % within each cluster
+  prop_total <- prop.table(tab)              # % overall
+  
+  list(
+    tabla            = tab,
+    prop_por_cluster = round(prop_clust * 100, 1),
+    prop_global      = round(prop_total * 100, 1)
+  )
+}
 
-## Matrix Factorization
+# Variables used in FAMD (same vars_final),
+# excluding numeric P43_1 from categorical profiling:
+vars_perfil <- intersect(
+  c("P01", "P53_RANGO2", "P54", "P56", "P57_1", "P58",
+    "P59", "P33", "P34", "P33_34_RNG", "P60", "P61", "P53_GENERACION"),
+  names(data_clust)
+)
 
-Matrix Factorization (MF) using the `recosystem` package produced significantly better results. A grid search was performed over latent dimensions (10, 20, 50), learning rates (0.05 and 0.1), and regularization strengths. The best-performing configuration was:
+# Create a list of profiles per variable
+lista_perfiles <- lapply(vars_perfil, perfil_var_cluster)
+names(lista_perfiles) <- vars_perfil
 
-- **Latent dimensions:** 20  
-- **Learning rate:** 0.1  
-- **Regularization:** costp_l2 = 0.01, costq_l2 = 0.01  
+# --- FUNCTION TO EXTRACT DETAILED VARIABLE INFORMATION ---
+info_variable <- function(v) {
+  etiqueta   <- attr(data_sav[[v]], "label")
+  categorias <- attr(data_sav[[v]], "labels")
+  
+  cat("\n============================\n")
+  cat("Variable:", v, "\n")
+  cat("Question:", ifelse(is.null(etiqueta), "NO LABEL AVAILABLE", etiqueta), "\n")
+  
+  if (!is.null(categorias)) {
+    cat("Categories (original SPSS labels):\n")
+    print(categorias)
+  } else {
+    cat("Categories: NOT APPLICABLE (numeric or no labels)\n")
+  }
+  
+  cat("----------------------------\n")
+}
 
-This configuration achieved an average validation RMSE during tuning of approximately:
+# --- DISPLAY CLUSTER PROFILES FOR CATEGORICAL VARIABLES ---
+for (v in vars_perfil) {
+  info_variable(v)   # show variable name + question + categories
+  
+  cat("Percentage distribution by cluster (%):\n")
+  print(lista_perfiles[[v]]$prop_por_cluster)
+  
+  cat("\n")
+}
 
-**RMSE = 0.8103**
 
-which is well below the project requirement of 0.86490. This confirms that MF captures latent features that the baseline model cannot represent.
+# Numerical summary per cluster
 
-The final Matrix Factorization model, trained on the full edx set with the optimized hyperparameters, achieved an RMSE of 0.7799 on the final hold-out test set.
 
+# FUNCTION TO SHOW NUMERIC VARIABLE INFO (NAME + QUESTION)
+show_numeric_info <- function(var) {
+  etiqueta <- attr(data_sav[[var]], "label")
+  
+  cat("\n============================\n")
+  cat("Numeric variable:", var, "\n")
+  cat("Question:", ifelse(is.null(etiqueta), "NO LABEL AVAILABLE", etiqueta), "\n")
+  cat("----------------------------\n")
+}
+
+# Add original-scale spending (USD) for reporting
+data_clust <- data_clust %>%
+  mutate(
+    P43_1_usd = exp(P43_1)  # back-transform from log
+  )
+
+# Optional: add a descriptive label for the back-transformed variable
+attr(data_clust$P43_1_usd, "label") <- 
+  "Total trip spending in USD (back-transformed from log)"
+
+# Identify numeric variables in data_clust
+num_vars <- names(data_clust)[sapply(data_clust, is.numeric)]
+
+# Remove the log version of P43_1 from the summary (we only want original-scale USD)
+num_vars <- setdiff(num_vars, "P43_1")
+
+# Show info for numeric variables (only those that exist in data_sav or are P43_1_usd)
+for (var in num_vars) {
+  if (var %in% names(data_sav)) {
+    show_numeric_info(var)
+  } else if (var == "P43_1_usd") {
+    cat("\n============================\n")
+    cat("Numeric variable: P43_1_usd\n")
+    cat("Question: Total trip spending in USD (back-transformed from log)\n")
+    cat("----------------------------\n")
+  }
+}
+
+# COMPUTE NUMERIC SUMMARY PER CLUSTER (using original-scale spending)
+resumen_numerico <- data_clust %>%
+  select(cluster, all_of(num_vars)) %>%
+  group_by(cluster) %>%
+  summarise(
+    across(
+      .cols = where(is.numeric),
+      .fns  = list(
+        mean = ~ mean(.x, na.rm = TRUE),
+        sd   = ~ sd(.x, na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    ),
+    .groups = "drop"
+  )
+
+cat("\nNUMERIC SUMMARY BY CLUSTER (original scale for spending):\n")
+print(resumen_numerico)
+```
+
+\subsubsection*{Main Defining Variables by Cluster (with Percentages)}
+
+\begin{itemize}
+
+%--------------------------------------------------------
+\item \textbf{Cluster 1 – Very young student leisure travelers}\\
+Dominant characteristics:
+\begin{itemize}
+  \item \textbf{Age (P53\_RANGO2):} 15--24 years (\textbf{80.8\%}); 25--34 years (18.4\%).
+  \item \textbf{Generation (P53\_GENERACION):} Centennials (\textbf{96.9\%}).
+  \item \textbf{Marital Status (P56):} Single (\textbf{82.1\%}).
+  \item \textbf{Children (P57\_1):} No children (\textbf{98.7\%}).
+  \item \textbf{Occupation (P58):} Students (\textbf{83.6\%}).
+  \item \textbf{Main Motive (P01):} Vacations / leisure (\textbf{63.6\%}).
+  \item \textbf{Education (P60):} University completed (44.9\%), secondary (36.9\%).
+  \item \textbf{Planning Horizon (P33\_34\_RNG):} 1--4 months (\textbf{61.6\%}).
+  \item \textbf{Spending (P43\_1\_usd):} Mean USD \textbf{2,410}.
+\end{itemize}
+
+%--------------------------------------------------------
+\item \textbf{Cluster 2 – Business-oriented working Millennials}\\
+Dominant characteristics:
+\begin{itemize}
+  \item \textbf{Main Motive (P01):} Business (\textbf{60.3\%}).
+  \item \textbf{Age (P53\_RANGO2):} 35--54 years (60.6\%), 25--34 years (30.9\%).
+  \item \textbf{Generation:} Millennials (65.0\%), Gen X (19.5\%).
+  \item \textbf{Marital Status:} Married/partnered (\textbf{51.5\%}).
+  \item \textbf{Children:} Children under 14 (\textbf{37.3\%}).
+  \item \textbf{Occupation:} Private-sector workers (\textbf{77.3\%}).
+  \item \textbf{Sector (P59):} Services (7.5\%), transport (15.1\%), health (5.8\%).
+  \item \textbf{Planning Horizon:} <1 month (\textbf{82.7\%}).
+  \item \textbf{Education:} University completed (\textbf{50.7\%}); postgraduate (18.1\%).
+  \item \textbf{Spending:} Mean USD \textbf{1,820}.
+\end{itemize}
+
+%--------------------------------------------------------
+\item \textbf{Cluster 3 – Mid-life families with higher spending}\\
+Dominant characteristics:
+\begin{itemize}
+  \item \textbf{Age:} 35--54 years (\textbf{79.2\%}); 55+ (18.6\%).
+  \item \textbf{Generation:} Gen X (\textbf{66.6\%}).
+  \item \textbf{Marital Status:} Married (\textbf{71.8\%}).
+  \item \textbf{Children:} Children 0--14 (\textbf{29.3\%}); children >18 (\textbf{20.3\%}).
+  \item \textbf{Occupation:} Private-sector (47.3\%), public-sector (35.5\%).
+  \item \textbf{Sector:} Education (\textbf{22.5\%}), health (17.0\%), services (12.1\%).
+  \item \textbf{Motive:} Vacations (63.8\%).
+  \item \textbf{Planning Horizon:} 1--4 months (66.4\%).
+  \item \textbf{Education:} University (30.5\%), master's (23.5\%), doctorate (15.5\%).
+  \item \textbf{Spending:} Mean USD \textbf{3,070}.
+\end{itemize}
+
+%--------------------------------------------------------
+\item \textbf{Cluster 4 – Young adult leisure travelers}\\
+Dominant characteristics:
+\begin{itemize}
+  \item \textbf{Age:} 25--34 years (\textbf{65.3\%}); 15--24 years (7.5\%).
+  \item \textbf{Generation:} Millennials (\textbf{55.9\%}), Centennials (41.7\%).
+  \item \textbf{Marital Status:} Single (\textbf{60.1\%}).
+  \item \textbf{Children:} No children (\textbf{94.4\%}).
+  \item \textbf{Motive:} Vacations (\textbf{82.7\%}).
+  \item \textbf{Occupation:} Private-sector (59.1\%), students (21.8\%).
+  \item \textbf{Planning Horizon:} 1--4 months (\textbf{66.3\%}).
+  \item \textbf{Education:} Mainly university (50.7\%).
+  \item \textbf{Spending:} Mean USD \textbf{2,576}.
+\end{itemize}
+
+%--------------------------------------------------------
+\item \textbf{Cluster 5 – Senior, high-income, high-spending travelers}\\
+Dominant characteristics:
+\begin{itemize}
+  \item \textbf{Age:} 55+ years (\textbf{97.5\%}).
+  \item \textbf{Generation:} Baby Boomers (\textbf{80.3\%}).
+  \item \textbf{Marital Status:} Married (\textbf{67.4\%}).
+  \item \textbf{Children:} Adult children living independently (\textbf{70.7\%}).
+  \item \textbf{Occupation:} Retired (\textbf{44.4\%}).
+  \item \textbf{Motive:} Vacations (\textbf{68.1\%}); visit family (17.3\%).
+  \item \textbf{Planning Horizon:} 1--4 months (\textbf{58.4\%}).
+  \item \textbf{Education:} University (44.3\%), master's (17.8\%), doctorate (7.4\%).
+  \item \textbf{Spending:} Highest mean: USD \textbf{3,186}.
+\end{itemize}
+
+\end{itemize}
 
 # Conclusion
 
-Overall, the findings confirm that matrix factorization offers a robust and accurate solution for building recommender systems on large-scale datasets. The model generalizes well to unseen data, and the final performance validates the methodological choices and tuning process carried out throughout the project.
+This study demonstrates the effectiveness of unsupervised machine-learning methods for uncovering latent behavioral and demographic structures within the 2024 Foreign Tourist Profile Survey. By applying a rigorous workflow centered on dimensionality reduction (FAMD) and partitioning clustering (PAM), the analysis successfully identified complex patterns in a dataset characterized by mixed variable types, nonlinear relationships, and high heterogeneity—conditions for which unsupervised learning is particularly powerful. These methods enabled the discovery of natural groupings without imposing prior assumptions or predefined categories, allowing the data itself to reveal the underlying segmentation of international visitors to Peru.
 
+The FAMD analysis, an unsupervised multivariate technique, reduced the complexity of the dataset while preserving key sources of variance. This step ensured that the clustering did not rely on raw, noisy, or redundant variables, but on a condensed representation that captures the true structural relationships among travelers.
 
+Using this FAMD space, the PAM clustering algorithm, a classic unsupervised method designed for mixed-data applications, was used to partition the tourist population. Multiple internal validation metrics—Silhouette, Dunn, and Calinski–Harabasz—were evaluated to avoid relying on a single criterion. Although the indices pointed to different optimal k values (a frequent occurrence in unsupervised learning), their combined interpretation and practical considerations identified five clusters as the most balanced and actionable solution.
+
+Crucially, the reliability of the unsupervised segmentation was assessed through bootstrap-based stability analysis using clusterboot. The resulting Jaccard coefficients (0.84–0.98) confirmed that the five clusters are not artifacts of noise or sampling variation but stable structural components consistently reproduced across resampled datasets. This step is essential in unsupervised learning, where model validation does not rely on ground-truth labels but on the reproducibility of discovered patterns.
+
+The resulting five-segment structure—ranging from very young student leisure travelers to senior high-income visitors—captures meaningful and interpretable market segments that emerge organically from the data. Differences observed across age, generation, household structure, planning behavior, occupational status, travel motivation, and spending levels illustrate the power of unsupervised methods to reveal hidden behavioral profiles that supervised models or traditional descriptive statistics would not detect.
+
+Overall, the study provides strong evidence that unsupervised learning is a robust and insightful approach for segmenting heterogeneous populations in tourism analytics. Through careful preprocessing, dimensionality reduction, clustering, and stability validation, the analysis delivered a statistically sound and practically useful segmentation. The five-cluster solution offers a comprehensive, data-driven understanding of international tourist behavior—supporting more precise marketing strategies, product differentiation, and policy planning in Peru’s tourism sector.
