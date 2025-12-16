@@ -1,0 +1,123 @@
+---
+title: "Readme"
+author: "Gabriel Gonzalo Ojeda Cárcamo"
+date: "16/12/2025"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Capstone CYO Project
+## Unsupervised Clustering of International Tourists in Peru (FAMD + PAM)
+
+This capstone project applies **unsupervised machine learning techniques** to segment international tourists visiting Peru using data from the **2024 Foreign Tourist Profile Survey (PROMPERÚ)**.
+The analysis combines **Factor Analysis of Mixed Data (FAMD)** for dimensionality reduction with **Partitioning Around Medoids (PAM)** for clustering, enabling robust segmentation of heterogeneous survey data containing both categorical and numerical variables.
+
+---
+
+## Project Objectives
+
+- Identify **latent tourist segments** based on sociodemographic, behavioral, and spending characteristics
+- Apply **unsupervised learning methods** suitable for mixed-type data
+- Validate clustering solutions using **multiple internal metrics**
+- Assess cluster robustness using **bootstrap-based stability analysis**
+- Generate **interpretable and actionable tourist profiles**
+
+---
+
+## Data Source
+
+- **Survey:** Foreign Tourist Profile Survey - 2024
+- **Institution:** PROMPERÚ
+- **Coverage:** February, May, August, and November 2024
+- **Sample size:** 5,268 international tourists
+- **Location:** Jorge Chávez International Airport (Peru)
+- **Population:** International tourists aged 15 years and older
+
+The dataset includes detailed information on:
+- Travel motivation
+- Sociodemographic characteristics
+- Planning behavior
+- Occupation and income
+- Total trip spending
+
+---
+
+## Methodological Framework
+
+### 1. Data Preparation
+- Selection of analytically relevant variables
+- Conversion of SPSS-labelled variables to R factors
+- Removal of variables with excessive missingness
+- Log-transformation of total trip spending
+
+### 2. Missing Value Imputation
+- **missForest** (Random Forest-based imputation for mixed data)
+- Strong performance: *NRMSE $\approx$ 0.19*, *PFC = 0.00*
+- Preserves the multivariate structure of the data
+
+### 3. Dimensionality Reduction
+- **Factor Analysis of Mixed Data (FAMD)**
+- Reduces dimensionality while retaining key sources of variance
+
+### 4. Clustering
+- **Partitioning Around Medoids (PAM)** applied to FAMD coordinates
+- Distance-based clustering suitable for mixed-type data
+
+### 5. Cluster Validation
+- Silhouette Index
+- Calinski-Harabasz Index
+- Dunn Index
+- Bootstrap stability analysis (Jaccard similarity)
+
+A **five-cluster solution (k = 5)** was selected as the most balanced and interpretable configuration.
+
+---
+
+## Key Results
+
+### Very young student leisure travelers
+- Predominantly Centennials (15-24 years)
+- Students, single, no children
+- Leisure-oriented
+- Moderate average spending
+
+### Business-oriented working Millennials
+- Business travel as main motive
+- Short planning horizon
+- Lowest average spending
+
+### Mid-life families with higher spending
+- Mainly Generation X
+- Married with children
+- High education levels
+- High average trip expenditure
+
+### Young adult leisure travelers
+- Millennials and Centennials
+- Leisure-focused
+- Mostly private-sector workers
+- Medium spending levels
+
+### Senior high-income, high-spending travelers
+- Baby Boomers (55+ years)
+- Retired, highly educated
+- Highest average spending
+
+Cluster stability analysis produced **high Jaccard coefficients (0.84-0.98)**, confirming that the segments are robust and reproducible.
+
+---
+
+## Tools & Technologies
+
+- **Language:** R
+- **Core packages:**
+  - `FactoMineR`, `factoextra`
+  - `cluster`, `clusterCrit`, `fpc`
+  - `missForest`
+- **Data handling & visualization:**
+  - `tidyverse`, `ggplot2`, `GGally`
+- **Data import:**
+  - `haven`, `sjlabelled`
